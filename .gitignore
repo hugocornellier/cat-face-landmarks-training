@@ -1,0 +1,8 @@
+.venv/
+.idea/
+artifacts/
+
+__pycache__/
+*.py[cod]
+
+.DS_Store

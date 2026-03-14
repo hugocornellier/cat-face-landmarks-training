@@ -1,0 +1,6 @@
+tensorflow-macos==2.15.0
+tensorflow-metal==1.1.0
+keras==2.15.0
+numpy==1.26.4
+kagglehub==1.0.0
+pillow==12.1.1
