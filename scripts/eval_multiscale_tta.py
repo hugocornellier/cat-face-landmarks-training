@@ -51,8 +51,6 @@ DATA_ROOT = (
     Path.home() / ".cache" / "kagglehub" / "datasets"
     / "georgemartvel" / "catflw" / "versions" / "2" / "CatFLW dataset"
 )
-MODEL_PATH = Path("artifacts/tight_margin/best.keras")
-
 # Scale factors for multi-scale TTA
 SCALES = [0.9, 1.0, 1.1]
 
@@ -244,11 +242,24 @@ def evaluate_all(model, val_records, cfg):
 
 
 def main():
+    import argparse
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--model", type=Path, default=Path("artifacts/tight_margin_384_long/best.keras"),
+                   help="Path to best.keras model file")
+    p.add_argument("--experiment", type=str, default="tight_margin_384",
+                   help="Experiment preset name (for img_size/crop_margin)")
+    p.add_argument("--img-size", type=int, default=None,
+                   help="Override image size from preset")
+    args = p.parse_args()
+
     configure_ca_bundle()
     set_seed(42)
 
-    cfg = copy.deepcopy(EXPERIMENT_PRESETS["tight_margin"])
-    print(f"Preset:      tight_margin")
+    cfg = copy.deepcopy(EXPERIMENT_PRESETS[args.experiment])
+    if args.img_size:
+        cfg.img_size = args.img_size
+    print(f"Preset:      {args.experiment}")
     print(f"img_size:    {cfg.img_size}")
     print(f"crop_margin: {cfg.crop_margin}")
     print(f"lm_margin:   {cfg.lm_margin}")
@@ -259,10 +270,11 @@ def main():
     _, val_records = split_records(all_records, test_fraction=0.15, seed=42)
     print(f"Val records: {len(val_records)}")
 
-    print(f"\nLoading model from {MODEL_PATH} ...")
+    model_path = args.model
+    print(f"\nLoading model from {model_path} ...")
     custom_objects = {"SoftArgmax2D": SoftArgmax2D, "WarmupSchedule": WarmupSchedule}
     model = tf.keras.models.load_model(
-        str(MODEL_PATH), custom_objects=custom_objects, compile=False
+        str(model_path), custom_objects=custom_objects, compile=False
     )
     print(f"Model output shape: {model.output_shape}")
 

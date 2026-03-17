@@ -297,6 +297,118 @@ EXPERIMENT_PRESETS: dict[str, ExperimentConfig] = {
         nme_mode="iod",
         patience=50,
     ),
+    # --- Small models (MobileNetV3) ---
+    "small_v3large_256": ExperimentConfig(
+        name="small_v3large_256",
+        backbone="mobilenetv3large",
+        head_type="heatmap",
+        heatmap_channels=128,
+        heatmap_dropout=0.1,
+        num_deconv_layers=4,
+        epochs=100,
+        finetune_epochs=200,
+        finetune_learning_rate=1e-5,
+        finetune_last_layers=40,
+        batch_size=16,
+        learning_rate=1e-4,
+        lr_schedule="constant",
+        loss="mse",
+        optimizer="adamw",
+        weight_decay=1e-4,
+        use_swa=False,
+        img_size=256,
+        lm_margin=0.05,
+        crop_margin=0.10,
+        aug_rotation=True,
+        aug_rotation_deg=15.0,
+        aug_flip=True,
+        aug_crop_jitter=True,
+        aug_crop_jitter_frac=0.08,
+        aug_scale=True,
+        aug_brightness=True,
+        aug_contrast=True,
+        aug_saturation=True,
+        aug_color_balance=True,
+        aug_sharpness=True,
+        aug_blur=True,
+        aug_noise=True,
+        nme_mode="iod",
+        patience=50,
+    ),
+    "small_v3large_384": ExperimentConfig(
+        name="small_v3large_384",
+        backbone="mobilenetv3large",
+        head_type="heatmap",
+        heatmap_channels=128,
+        heatmap_dropout=0.1,
+        num_deconv_layers=4,
+        epochs=100,
+        finetune_epochs=300,
+        finetune_learning_rate=1e-5,
+        finetune_last_layers=40,
+        batch_size=8,
+        learning_rate=1e-4,
+        lr_schedule="constant",
+        loss="mse",
+        optimizer="adamw",
+        weight_decay=1e-4,
+        use_swa=False,
+        img_size=384,
+        lm_margin=0.05,
+        crop_margin=0.10,
+        aug_rotation=True,
+        aug_rotation_deg=15.0,
+        aug_flip=True,
+        aug_crop_jitter=True,
+        aug_crop_jitter_frac=0.08,
+        aug_scale=True,
+        aug_brightness=True,
+        aug_contrast=True,
+        aug_saturation=True,
+        aug_color_balance=True,
+        aug_sharpness=True,
+        aug_blur=True,
+        aug_noise=True,
+        nme_mode="iod",
+        patience=50,
+    ),
+    "small_v3small_256": ExperimentConfig(
+        name="small_v3small_256",
+        backbone="mobilenetv3small",
+        head_type="heatmap",
+        heatmap_channels=128,
+        heatmap_dropout=0.1,
+        num_deconv_layers=4,
+        epochs=100,
+        finetune_epochs=200,
+        finetune_learning_rate=1e-5,
+        finetune_last_layers=30,
+        batch_size=16,
+        learning_rate=1e-4,
+        lr_schedule="constant",
+        loss="mse",
+        optimizer="adamw",
+        weight_decay=1e-4,
+        use_swa=False,
+        img_size=256,
+        lm_margin=0.05,
+        crop_margin=0.10,
+        aug_rotation=True,
+        aug_rotation_deg=15.0,
+        aug_flip=True,
+        aug_crop_jitter=True,
+        aug_crop_jitter_frac=0.08,
+        aug_scale=True,
+        aug_brightness=True,
+        aug_contrast=True,
+        aug_saturation=True,
+        aug_color_balance=True,
+        aug_sharpness=True,
+        aug_blur=True,
+        aug_noise=True,
+        nme_mode="iod",
+        patience=50,
+    ),
 }
 
 
@@ -348,7 +460,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--use-swa", action="store_true", default=None)
     p.add_argument("--no-swa", dest="use_swa", action="store_false")
     p.add_argument("--nme-mode", choices=["crop", "iod"], default=None)
-    p.add_argument("--backbone", choices=["efficientnetb2", "efficientnetv2s", "densenet121"], default=None)
+    p.add_argument("--backbone", choices=["efficientnetb2", "efficientnetv2s", "densenet121", "mobilenetv3large", "mobilenetv3small"], default=None)
     p.add_argument("--head-type", choices=["dense", "heatmap"], default=None)
     p.add_argument("--unfreeze-backbone", action="store_true", default=None)
     p.add_argument("--no-unfreeze-backbone", dest="unfreeze_backbone", action="store_false")
@@ -1142,6 +1254,24 @@ def build_model(cfg: ExperimentConfig) -> tf.keras.Model:
             include_top=False,
             weights=None if not pretrained else "imagenet",
         )
+    elif cfg.backbone == "mobilenetv3large":
+        # MobileNetV3Large expects [0, 255] input (has internal preprocessing).
+        x = tf.keras.layers.Rescaling(scale=255.0, offset=0.0, name="to_0_255")(inputs)
+        backbone = tf.keras.applications.MobileNetV3Large(
+            input_shape=(img_size, img_size, 3),
+            include_top=False,
+            minimalistic=False,
+            weights=None if not pretrained else "imagenet",
+        )
+    elif cfg.backbone == "mobilenetv3small":
+        # MobileNetV3Small expects [0, 255] input (has internal preprocessing).
+        x = tf.keras.layers.Rescaling(scale=255.0, offset=0.0, name="to_0_255")(inputs)
+        backbone = tf.keras.applications.MobileNetV3Small(
+            input_shape=(img_size, img_size, 3),
+            include_top=False,
+            minimalistic=False,
+            weights=None if not pretrained else "imagenet",
+        )
     else:  # efficientnetb2
         x = tf.keras.layers.Rescaling(scale=255.0, offset=0.0, name="to_0_255")(inputs)
         backbone = tf.keras.applications.EfficientNetB2(
@@ -1284,6 +1414,7 @@ def get_backbone(model: tf.keras.Model) -> tf.keras.Model:
     for layer in model.layers:
         if isinstance(layer, tf.keras.Model) and (
             layer.name.startswith("efficientnet") or layer.name.startswith("densenet")
+            or layer.name.startswith("Mobilenet") or layer.name.startswith("mobilenet")
         ):
             return layer
     raise RuntimeError("Backbone not found")
