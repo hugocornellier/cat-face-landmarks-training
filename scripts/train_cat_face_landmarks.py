@@ -137,6 +137,8 @@ class ExperimentConfig:
     img_size: int = 224
     crop_margin: float = 0.20
     lm_margin: float = 0.12
+    square_pad: bool = False          # True = pad shorter side to square (preserve aspect ratio)
+    use_dataset_bbox: bool = False    # True = use annotation bounding_boxes instead of landmark-derived
 
     # Metric used for early stopping / model selection
     nme_mode: str = "iod"           # "crop" or "iod"
@@ -459,6 +461,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lr-schedule", choices=["constant", "cosine"], default=None)
     p.add_argument("--use-swa", action="store_true", default=None)
     p.add_argument("--no-swa", dest="use_swa", action="store_false")
+    p.add_argument("--swa-start-frac", type=float, default=None,
+                   help="Fraction of epochs after which SWA averaging starts (default 0.5)")
     p.add_argument("--nme-mode", choices=["crop", "iod"], default=None)
     p.add_argument("--backbone", choices=["efficientnetb2", "efficientnetv2s", "densenet121", "mobilenetv3large", "mobilenetv3small"], default=None)
     p.add_argument("--head-type", choices=["dense", "heatmap"], default=None)
@@ -485,6 +489,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--heatmap-sigma", type=float, default=None)
     p.add_argument("--coord-loss-weight", type=float, default=None)
     p.add_argument("--num-deconv-layers", type=int, default=None)
+    p.add_argument("--square-pad", action="store_true", default=None,
+                   help="Pad crop to square before resize (preserve aspect ratio)")
+    p.add_argument("--no-square-pad", dest="square_pad", action="store_false")
+    p.add_argument("--use-dataset-bbox", action="store_true", default=None,
+                   help="Use annotation bounding_boxes instead of landmark-derived")
+    p.add_argument("--no-use-dataset-bbox", dest="use_dataset_bbox", action="store_false")
     return p.parse_args()
 
 
@@ -515,6 +525,7 @@ def resolve_config(args: argparse.Namespace) -> ExperimentConfig:
         "loss": args.loss,
         "lr_schedule": args.lr_schedule,
         "use_swa": args.use_swa,
+        "swa_start_frac": args.swa_start_frac,
         "nme_mode": args.nme_mode,
         "backbone": args.backbone,
         "head_type": args.head_type,
@@ -532,6 +543,8 @@ def resolve_config(args: argparse.Namespace) -> ExperimentConfig:
         "heatmap_sigma": args.heatmap_sigma,
         "coord_loss_weight": args.coord_loss_weight,
         "num_deconv_layers": args.num_deconv_layers,
+        "square_pad": args.square_pad,
+        "use_dataset_bbox": args.use_dataset_bbox,
     }
     for key, val in _override.items():
         if val is not None:
@@ -591,10 +604,13 @@ def _landmark_bbox(
     return (x1, y1, x2, y2)
 
 
-def load_all_records(data_root: Path, lm_margin: float) -> list[Record]:
+def load_all_records(data_root: Path, lm_margin: float,
+                     use_dataset_bbox: bool = False) -> list[Record]:
     """Load all CatFLW records from the flat directory structure.
 
     CatFLW has no train/test split — images/ and labels/ contain all samples.
+    If use_dataset_bbox=True, uses annotation bounding_boxes instead of
+    landmark-derived boxes.
     """
     image_dir = data_root / "images"
     label_dir = data_root / "labels"
@@ -624,7 +640,22 @@ def load_all_records(data_root: Path, lm_margin: float) -> list[Record]:
         except Exception:
             skipped += 1
             continue
-        bbox = _landmark_bbox(landmarks, img_w, img_h, lm_margin)
+        if use_dataset_bbox:
+            raw_bb = ann.get("bounding_boxes")
+            if raw_bb and len(raw_bb) == 4:
+                x1, y1, x2, y2 = float(raw_bb[0]), float(raw_bb[1]), float(raw_bb[2]), float(raw_bb[3])
+                x1 = max(0.0, min(x1, float(img_w)))
+                y1 = max(0.0, min(y1, float(img_h)))
+                x2 = max(0.0, min(x2, float(img_w)))
+                y2 = max(0.0, min(y2, float(img_h)))
+                if x2 - x1 <= 1.0 or y2 - y1 <= 1.0:
+                    bbox = _landmark_bbox(landmarks, img_w, img_h, lm_margin)
+                else:
+                    bbox = (x1, y1, x2, y2)
+            else:
+                bbox = _landmark_bbox(landmarks, img_w, img_h, lm_margin)
+        else:
+            bbox = _landmark_bbox(landmarks, img_w, img_h, lm_margin)
         if bbox is None:
             skipped += 1
             continue
@@ -717,6 +748,7 @@ def build_tf_dataset(
 
     img_size = cfg.img_size
     crop_margin = cfg.crop_margin
+    sq_pad = cfg.square_pad
     hm_size = (img_size // 32) * (2 ** cfg.num_deconv_layers)  # 56 or 112
 
     def _load_and_crop(
@@ -732,7 +764,7 @@ def build_tf_dataset(
             box_aug = scale_crop_box(box_aug, image, cfg.aug_scale_range)
         if training and cfg.aug_crop_jitter:
             box_aug = jitter_crop_box(box_aug, image, cfg.aug_crop_jitter_frac)
-        crop, lm_norm = crop_and_normalize(image, box_aug, lm_flat, img_size, crop_margin)
+        crop, lm_norm = crop_and_normalize(image, box_aug, lm_flat, img_size, crop_margin, sq_pad)
         if training:
             if cfg.aug_rotation:
                 crop, lm_norm = rotate_augment(crop, lm_norm, img_size, cfg.aug_rotation_deg)
@@ -774,11 +806,15 @@ def crop_and_normalize(
     lm_flat: tf.Tensor,
     img_size: int,
     crop_margin: float,
+    square_pad: bool = False,
 ) -> tuple[tf.Tensor, tf.Tensor]:
     """Crop image to bbox + margin, resize to (img_size, img_size).
 
     Normalizes landmark coordinates relative to the crop window so that
     each value is in [0, 1].  At inference time, call with the predicted bbox.
+
+    If square_pad=True, the crop is padded (not stretched) to a square before
+    resizing, preserving the original aspect ratio.
     """
     img_h = tf.cast(tf.shape(image)[0], tf.float32)
     img_w = tf.cast(tf.shape(image)[1], tf.float32)
@@ -802,20 +838,47 @@ def crop_and_normalize(
     crop_h = tf.maximum(cy2i - cy1i, 1)
 
     cropped = tf.image.crop_to_bounding_box(image, cy1i, cx1i, crop_h, crop_w)
-    resized = tf.image.resize(cropped, [img_size, img_size], antialias=True)
-    resized = tf.cast(tf.clip_by_value(resized, 0.0, 1.0), tf.float32)
 
-    # Normalize landmarks relative to crop
-    cx1f = tf.cast(cx1i, tf.float32)
-    cy1f = tf.cast(cy1i, tf.float32)
-    crop_wf = tf.cast(crop_w, tf.float32)
-    crop_hf = tf.cast(crop_h, tf.float32)
+    if square_pad:
+        # Pad shorter side symmetrically to make a square, then resize.
+        max_side = tf.maximum(crop_h, crop_w)
+        pad_h = max_side - crop_h
+        pad_w = max_side - crop_w
+        pad_top = pad_h // 2
+        pad_bottom = pad_h - pad_top
+        pad_left = pad_w // 2
+        pad_right = pad_w - pad_left
+        cropped = tf.pad(cropped, [[pad_top, pad_bottom], [pad_left, pad_right], [0, 0]])
+        resized = tf.image.resize(cropped, [img_size, img_size], antialias=True)
+        resized = tf.cast(tf.clip_by_value(resized, 0.0, 1.0), tf.float32)
 
-    lm = tf.reshape(lm_flat, [NUM_LANDMARKS, 2])  # [48, 2]
-    lm_x = (lm[:, 0] - cx1f) / crop_wf
-    lm_y = (lm[:, 1] - cy1f) / crop_hf
-    lm_norm = tf.clip_by_value(tf.stack([lm_x, lm_y], axis=-1), 0.0, 1.0)
-    lm_norm_flat = tf.reshape(lm_norm, [NUM_LANDMARKS * 2])
+        # Normalize landmarks: shift by padding offset, then divide by square side
+        cx1f = tf.cast(cx1i, tf.float32)
+        cy1f = tf.cast(cy1i, tf.float32)
+        max_side_f = tf.cast(max_side, tf.float32)
+        pad_left_f = tf.cast(pad_left, tf.float32)
+        pad_top_f = tf.cast(pad_top, tf.float32)
+
+        lm = tf.reshape(lm_flat, [NUM_LANDMARKS, 2])  # [48, 2]
+        lm_x = (lm[:, 0] - cx1f + pad_left_f) / max_side_f
+        lm_y = (lm[:, 1] - cy1f + pad_top_f) / max_side_f
+        lm_norm = tf.clip_by_value(tf.stack([lm_x, lm_y], axis=-1), 0.0, 1.0)
+        lm_norm_flat = tf.reshape(lm_norm, [NUM_LANDMARKS * 2])
+    else:
+        resized = tf.image.resize(cropped, [img_size, img_size], antialias=True)
+        resized = tf.cast(tf.clip_by_value(resized, 0.0, 1.0), tf.float32)
+
+        # Normalize landmarks relative to crop
+        cx1f = tf.cast(cx1i, tf.float32)
+        cy1f = tf.cast(cy1i, tf.float32)
+        crop_wf = tf.cast(crop_w, tf.float32)
+        crop_hf = tf.cast(crop_h, tf.float32)
+
+        lm = tf.reshape(lm_flat, [NUM_LANDMARKS, 2])  # [48, 2]
+        lm_x = (lm[:, 0] - cx1f) / crop_wf
+        lm_y = (lm[:, 1] - cy1f) / crop_hf
+        lm_norm = tf.clip_by_value(tf.stack([lm_x, lm_y], axis=-1), 0.0, 1.0)
+        lm_norm_flat = tf.reshape(lm_norm, [NUM_LANDMARKS * 2])
 
     return resized, lm_norm_flat
 
@@ -1156,7 +1219,15 @@ class SoftArgmax2D(tf.keras.layers.Layer):
         self.beta = beta
 
     def build(self, input_shape):
-        _, h, w, _ = input_shape
+        _, h, w, k = input_shape
+        # Keep the spatial dims as Python ints so call() can use static shapes.
+        # Reading them back with tf.shape() at call time makes the reshapes
+        # dynamic, which leaves a dynamic-sized tensor in the exported graph:
+        # TFLite then warns that delegates supporting only static shapes cannot
+        # cover it, and LiteRT Next's compiled runtime produces all-zero output
+        # and fails on the second invocation. Only the batch dim needs to stay
+        # dynamic, expressed as -1.
+        self._h, self._w, self._k = int(h), int(w), int(k)
         # Coordinate grids normalized to [0, 1].
         # x varies along width (axis=1), y varies along height (axis=0).
         x_coords = tf.linspace(0.0, 1.0, w)  # [W]
@@ -1167,16 +1238,13 @@ class SoftArgmax2D(tf.keras.layers.Layer):
         super().build(input_shape)
 
     def call(self, heatmaps):
-        # heatmaps: (B, H, W, K)
-        b = tf.shape(heatmaps)[0]
-        h = tf.shape(heatmaps)[1]
-        w = tf.shape(heatmaps)[2]
-        k = tf.shape(heatmaps)[3]
+        # heatmaps: (B, H, W, K) with H, W, K static from build().
+        h, w, k = self._h, self._w, self._k
 
         # Spatial softmax with temperature: flatten H*W, softmax, reshape back.
-        flat = tf.reshape(heatmaps, [b, h * w, k])        # (B, H*W, K)
+        flat = tf.reshape(heatmaps, [-1, h * w, k])       # (B, H*W, K)
         weights = tf.nn.softmax(flat * self.beta, axis=1)   # (B, H*W, K)
-        weights = tf.reshape(weights, [b, h, w, k])         # (B, H, W, K)
+        weights = tf.reshape(weights, [-1, h, w, k])        # (B, H, W, K)
 
         # Weighted sum of coordinates.
         x = tf.reduce_sum(weights * self.x_grid, axis=[1, 2])  # (B, K)
@@ -1184,7 +1252,7 @@ class SoftArgmax2D(tf.keras.layers.Layer):
 
         # Interleave as [x0, y0, x1, y1, ...].
         coords = tf.stack([x, y], axis=-1)  # (B, K, 2)
-        return tf.reshape(coords, [b, k * 2])  # (B, K*2)
+        return tf.reshape(coords, [-1, k * 2])  # (B, K*2)
 
     def get_config(self):
         config = super().get_config()
@@ -1605,7 +1673,8 @@ def train_model(
             ft_lr = WarmupSchedule(cfg.finetune_learning_rate, warmup_steps)
         compile_model(model, lr=ft_lr, cfg=cfg)
 
-        swa_cb = SWACallback(start_epoch=cfg.finetune_epochs // 2) if cfg.use_swa else None
+        swa_start = int(cfg.finetune_epochs * cfg.swa_start_frac)
+        swa_cb = SWACallback(start_epoch=swa_start) if cfg.use_swa else None
         phase2_callbacks = [
             tf.keras.callbacks.EarlyStopping(
                 monitor=monitor, mode="min",
@@ -1698,6 +1767,7 @@ def tflite_sanity_check(
             lm_flat,
             img_size,
             crop_margin,
+            square_pad=cfg.square_pad,
         )
         inp = tf.expand_dims(crop, 0).numpy().astype(in_det["dtype"])
         interp.set_tensor(in_det["index"], inp)
@@ -1779,7 +1849,8 @@ def main() -> None:
     if not args.data_root.exists():
         raise FileNotFoundError(f"CatFLW not found at {args.data_root}")
 
-    all_records = load_all_records(args.data_root, cfg.lm_margin)
+    all_records = load_all_records(args.data_root, cfg.lm_margin,
+                                   use_dataset_bbox=cfg.use_dataset_bbox)
     if not all_records:
         raise RuntimeError("No usable records found.")
     train_records, val_records = split_records(all_records, args.test_fraction, cfg.seed)

@@ -201,6 +201,7 @@ def evaluate_all(model, val_records, cfg):
             lm_flat,
             cfg.img_size,
             cfg.crop_margin,
+            square_pad=getattr(cfg, 'square_pad', False),
         )
         true_2d = tf.reshape(lm_norm, [NUM_LANDMARKS, 2])
 

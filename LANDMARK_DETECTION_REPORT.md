@@ -1,6 +1,6 @@
 # Cat Facial Landmark Detection: Progress Journal
 
-**Current best: NME_IOD = 3.16 (EfficientNetV2S 384px long + ms+flip TTA) | Best raw: 3.33 | Best small: 3.48 (11MB) | Target: 2.91 (paper ELD ensemble) | Started at: 3.72**
+**Current best: NME_IOD = 3.11 (EfficientNetV2S 448px cosine+SWA + ms+flip TTA) | Best raw: 3.27 | Best small: 3.48 / 3.31 w/ TTA (11MB) | Target: 2.91 (paper ELD ensemble) | Started at: 3.72**
 
 This document is a living journal of our work on cat facial landmark detection using the CatFLW dataset. It's designed for future LLMs/developers to pick up where we left off and continue pushing toward (and beyond) the paper's target.
 
@@ -9,30 +9,32 @@ This document is a living journal of our work on cat facial landmark detection u
 ## Quick Reference
 
 ### Current Best Models
-- **Best overall (with TTA)**: `tight_margin_384_long` + ms+flip TTA — **3.16 NME_IOD** (55MB TFLite, 6 inference passes)
-- **Best raw (no TTA)**: `tight_margin_384_long` (EfficientNetV2S) — **3.33 NME_IOD** (55MB TFLite)
-- **Best small model**: `small_v3large_384_long` (MobileNetV3Large) — **3.48 NME_IOD** (11MB TFLite)
+- **Best overall (with TTA)**: `tight_margin_448_cosine_swa` + ms+flip TTA — **3.11 NME_IOD** (55MB TFLite, 6 inference passes)
+- **Best raw (no TTA)**: `tight_margin_448_long` / `tight_margin_448_cosine_swa` (EfficientNetV2S) — **3.27 NME_IOD** (55MB TFLite)
+- **Best small model**: `small_v3large_384_long` (MobileNetV3Large) — **3.48 NME_IOD** raw / **3.31** w/ TTA (11MB TFLite)
 - **Architecture**: Backbone + 4-deconv heatmap head + SoftArgmax2D
 - **Train-val gap**: ~1.0 (very low — overfitting is NOT the bottleneck)
 
 ### All Single-Model Results
-| # | Model | Backbone | Resolution | NME_IOD | Train NME | Gap | TFLite Size |
-|---|---|---|---|---|---|---|---|
-| 1 | tight_margin_384_long | EfficientNetV2S | 384 | **3.33** | 2.35 | 0.98 | 55MB |
-| 2 | tight_margin_448 | EfficientNetV2S | 448 | 3.38 | 2.30 | 1.08 | 55MB |
-| 3 | tight_margin_384 | EfficientNetV2S | 384 | 3.43 | 2.47 | 0.96 | 55MB |
-| 4 | **small_v3large_384_long** | **MobileNetV3Large** | **384** | **3.48** | **2.48** | **1.00** | **11MB** |
-| 5 | tight_margin_320 | EfficientNetV2S | 320 | 3.53 | 2.51 | 1.02 | 55MB |
-| 6 | tight_margin_256_long | EfficientNetV2S | 256 | 3.61 | 2.46 | 1.15 | 55MB |
-| 7 | small_v3large_384 | MobileNetV3Large | 384 | 3.62 | 2.62 | 1.00 | 11MB |
-| 8 | small_v3large_448 | MobileNetV3Large | 448 | 3.63 | 2.46 | 1.17 | 11MB |
-| 9 | tight_margin_256 | EfficientNetV2S | 256 | 3.72 | 2.83 | 0.89 | 55MB |
-| 10 | small_v3small_256 | MobileNetV3Small | 256 | 4.65 | 3.40 | 1.25 | 5.6MB |
+| # | Model | Backbone | Resolution | NME_IOD | + TTA | Train NME | Gap | TFLite Size |
+|---|---|---|---|---|---|---|---|---|
+| 1 | **tight_margin_448_cosine_swa** | EfficientNetV2S | 448 | **3.27** | **3.11** | — | — | 55MB |
+| 2 | tight_margin_448_long | EfficientNetV2S | 448 | 3.27 | 3.13 | 1.63 | 1.64 | 55MB |
+| 3 | tight_margin_384_long | EfficientNetV2S | 384 | 3.33 | 3.16 | 2.35 | 0.98 | 55MB |
+| 4 | tight_margin_448 | EfficientNetV2S | 448 | 3.38 | — | 2.30 | 1.08 | 55MB |
+| 5 | tight_margin_384 | EfficientNetV2S | 384 | 3.43 | — | 2.47 | 0.96 | 55MB |
+| 6 | **small_v3large_384_long** | **MobileNetV3Large** | **384** | **3.48** | **3.31** | **2.48** | **1.00** | **11MB** |
+| 7 | tight_margin_320 | EfficientNetV2S | 320 | 3.53 | — | 2.51 | 1.02 | 55MB |
+| 8 | tight_margin_256_long | EfficientNetV2S | 256 | 3.61 | — | 2.46 | 1.15 | 55MB |
+| 9 | small_v3large_384 | MobileNetV3Large | 384 | 3.62 | — | 2.62 | 1.00 | 11MB |
+| 10 | small_v3large_448 | MobileNetV3Large | 448 | 3.63 | — | 2.46 | 1.17 | 11MB |
+| 11 | tight_margin_256 | EfficientNetV2S | 256 | 3.72 | — | 2.83 | 0.89 | 55MB |
+| 12 | small_v3small_256 | MobileNetV3Small | 256 | 4.65 | — | 3.40 | 1.25 | 5.6MB |
 
 ### Key Commands
 ```bash
-# Best overall model (EfficientNetV2S 384px, long fine-tune)
-python scripts/train_cat_face_landmarks.py --experiment tight_margin_384 --finetune-epochs 400 --finetune-last-layers 80 --out artifacts/tight_margin_384_long
+# Best overall model (EfficientNetV2S 448px, long fine-tune)
+python scripts/train_cat_face_landmarks.py --experiment tight_margin_384 --img-size 448 --batch-size 4 --finetune-epochs 400 --finetune-last-layers 80 --out artifacts/tight_margin_448_long
 
 # Best small model (MobileNetV3Large 384px, long fine-tune)
 python scripts/train_cat_face_landmarks.py --experiment small_v3large_384 --finetune-epochs 400 --finetune-last-layers 60 --out artifacts/small_v3large_384_long
@@ -46,8 +48,11 @@ python scripts/train_cat_face_landmarks.py --experiment tight_margin_256 --out a
 python scripts/train_cat_face_landmarks.py --experiment small_v3large_256 --out artifacts/small_v3large_256
 python scripts/train_cat_face_landmarks.py --experiment small_v3small_256 --out artifacts/small_v3small_256
 
+# Best with cosine+SWA (Round 6 — best TTA score)
+python scripts/train_cat_face_landmarks.py --experiment tight_margin_384 --img-size 448 --batch-size 4 --finetune-epochs 400 --finetune-learning-rate 2e-5 --lr-schedule cosine --use-swa --swa-start-frac 0.65 --out artifacts/tight_margin_448_cosine_swa
+
 # TTA evaluation (best model)
-python scripts/eval_multiscale_tta.py --model artifacts/tight_margin_384_long/best.keras --experiment tight_margin_384
+python scripts/eval_multiscale_tta.py --model artifacts/tight_margin_448_cosine_swa/best.keras --experiment tight_margin_384 --img-size 448
 
 # TTA evaluation (small model)
 python scripts/eval_multiscale_tta.py --model artifacts/small_v3large_384_long/best.keras --experiment small_v3large_384
@@ -123,8 +128,8 @@ Based on average normalized positions across all samples:
 | Images | 2,079 | 4,333 |
 | Landmarks | 48 | 46 |
 | Paper best NME_IOD | 2.91 | 6.52 |
-| Our best (single model, raw) | 3.33 | 8.77 |
-| Our best (single model + TTA) | 3.16 | 8.04 |
+| Our best (single model, raw) | 3.27 | 8.77 |
+| Our best (single model + TTA) | 3.13 | 8.04 |
 | Train-val gap | ~1.0 | ~3.5 |
 
 Cat faces are significantly easier to localize than dog faces. This is likely because:
@@ -190,7 +195,9 @@ Goal: achieve good accuracy in a much smaller package (~11MB vs 55MB TFLite).
 
 ### Round 4: Test-Time Augmentation (NME_IOD 3.33 → 3.16)
 
-Applied multi-scale + flip TTA to the best model (`tight_margin_384_long`). No retraining — just smarter inference by averaging predictions across multiple augmented views.
+Applied multi-scale + flip TTA to models. No retraining — just smarter inference by averaging predictions across multiple augmented views.
+
+**EfficientNetV2S 384px long (best at the time):**
 
 | Mode | Passes | NME_IOD | Gain vs baseline |
 |---|---|---|---|
@@ -199,29 +206,93 @@ Applied multi-scale + flip TTA to the best model (`tight_margin_384_long`). No r
 | Multi-scale (3 scales) | 3 | 3.24 | -0.09 |
 | **Multi-scale + flip** | **6** | **3.16** | **-0.17** |
 
+**MobileNetV3Large 384px long (11MB model):**
+
+| Mode | Passes | NME_IOD | Gain vs baseline |
+|---|---|---|---|
+| Baseline (no TTA) | 1 | 3.48 | — |
+| Flip TTA only | 2 | 3.37 | -0.11 |
+| Multi-scale (3 scales) | 3 | 3.41 | -0.07 |
+| **Multi-scale + flip** | **6** | **3.31** | **-0.17** |
+
 **Key learnings:**
-- TTA gives a free 0.17 NME gain — smaller than dogs (~0.7) because cat faces are already more uniform
+- TTA gives a consistent ~0.17 NME gain across both model sizes
+- Smaller than dogs (~0.7) because cat faces are already more uniform
 - Flip TTA alone (-0.11) is the biggest single contributor
-- Multi-scale adds modest additional gain on top of flip
 - Scales used: [0.9, 1.0, 1.1] with reflect-padding for zoom-out
-- 6x inference cost is the tradeoff — acceptable for offline/server, not ideal for real-time mobile
+- 11MB model with TTA (3.31) matches the 55MB model's raw score (3.33)
+
+### Round 5: Combining 448px + Long Training (NME_IOD 3.33 → 3.27 raw, 3.16 → 3.13 TTA)
+
+Combined the two best levers from Round 2 that had each been tested independently: 448px resolution + 400 ft epochs / 80 unfrozen layers.
+
+| # | Model | Config | NME_IOD | + TTA | Train NME | Gap |
+|---|---|---|---|---|---|---|
+| 11 | **tight_margin_448_long** | 448px, batch 4, 400 ft, 80 layers | **3.27** | **3.13** | 1.63 | 1.64 |
+
+**TTA breakdown (448px long):**
+
+| Mode | NME_IOD |
+|---|---|
+| Baseline | 3.27 |
+| Flip TTA | 3.17 |
+| Multi-scale | 3.21 |
+| **Multi-scale + flip** | **3.13** |
+
+**Key learnings:**
+- Combining resolution + long training gave additive gains: 448px alone was 3.38, long alone was 3.33, combined gives 3.27
+- Train-val gap grew to 1.64 (vs 0.98 at 384px long) — the model is starting to memorize at 448px
+- TTA gain consistent at ~0.14
+- This is likely near the EfficientNetV2S ceiling — resolution and training length are both plateauing
+- Model will serve as the teacher for knowledge distillation into the 11MB model
+
+### Round 6: Cosine Decay + SWA (NME_IOD raw unchanged at 3.27, TTA 3.13 → 3.11)
+
+Tested cosine learning rate decay + Stochastic Weight Averaging (SWA) on the best 448px config. Codex (GPT-5.4) analysis recommended this as the lowest-effort, highest-confidence improvement.
+
+**Config**: Same as tight_margin_448_long but with `--lr-schedule cosine --use-swa --swa-start-frac 0.65 --finetune-learning-rate 2e-5`
+
+| # | Model | Config | NME_IOD | + TTA | Notes |
+|---|---|---|---|---|---|
+| 12 | tight_margin_448_cosine_swa | cosine lr (2e-5→1e-6) + SWA (last 35%) | 3.267 | **3.107** | SWA was 3.270, Phase 2 best selected |
+
+**TTA breakdown (cosine+SWA model):**
+
+| Mode | NME_IOD |
+|---|---|
+| Baseline | 3.268 |
+| Flip TTA | 3.164 |
+| Multi-scale | 3.189 |
+| **Multi-scale + flip** | **3.107** |
+
+**Key learnings:**
+- Raw NME identical (3.267 vs 3.27) — cosine + SWA didn't improve the single best checkpoint
+- SWA (3.270) was slightly worse than the best Phase 2 checkpoint — weight averaging didn't help here
+- BUT TTA improved from 3.13 → 3.11 — the smoother weight landscape from cosine decay produces predictions that average better across augmented views
+- The gain is modest (0.02) but real, suggesting the model's predictions are more geometrically consistent
+- finetune_learning_rate=2e-5 (vs 1e-5 baseline) with cosine decay performed identically
+
+**Next steps being prepared:**
+- Square-pad crop (preserve aspect ratio instead of stretching) + dataset bounding boxes — code already implemented, ready to test
+- Self-distillation from TTA teacher predictions
 
 ---
 
 ## Not Yet Tried
 
 ### High confidence:
-- **3-model ensemble** (256+320+384) — gave ~0.2 gain on dogs, untested on cats
+- **Knowledge distillation** — train 11MB model to mimic the 55MB teacher's predictions. Expected to close 30-50% of the 3.27→3.48 gap (~0.05-0.10 gain)
+- **3-model ensemble** (256+320+384 or +448) — gave ~0.2 gain on dogs, untested on cats
 - **Ensemble + ms+flip TTA** — compound of above, biggest win on dogs (8.77 → 8.04)
-- **TTA on small model** — V3Large 384px long (3.48) likely drops to ~3.3 with TTA
 
 ### Medium confidence:
-- **Cosine annealing LR** for Phase 2 — untested, may find better optima
-- **More aggressive fine-tuning** — unfreeze 100+ backbone layers on EfficientNetV2S
-- **512px for EfficientNetV2S** — the large backbone might still benefit from higher resolution (unlike V3Large)
-- **Combining 448px + longer training** for EfficientNetV2S — each helped independently
+- **Square-pad crop + dataset bounding boxes** — preserve aspect ratio (instead of stretching) and use annotation bounding boxes for more consistent framing. Code implemented, ready to test. Expected gain: 0.05-0.12
+- **Self-distillation from TTA teacher** — cache TTA predictions, train with blended loss L_gt + λ*L_teacher. Expected gain: 0.04-0.08
+- **512px for EfficientNetV2S** — diminishing returns but might squeeze 0.02-0.03
+- **FPN/U-Net skip-fused multi-scale decoding** — replace plain deconv head with FPN using multi-scale backbone features. Expected gain: 0.04-0.09 (moderate-high effort)
 
 ### Low confidence / not recommended:
+- Cosine annealing LR + SWA — tested in Round 6. No raw improvement (3.27→3.27), tiny TTA gain (3.13→3.11). Not worth the complexity alone.
 - Higher regularization — train-val gap is only ~1.0, not worth addressing
 - Mixup — failed on dogs with similar dataset size
 - ELD (region-based specialists) — failed on dogs (9.15 vs 8.77 single model)
@@ -229,6 +300,7 @@ Applied multi-scale + flip TTA to the best model (`tight_margin_384_long`). No r
 - Ear-weighted loss — failed on dogs (robs from other landmarks)
 - MobileNetV3Small — too small, 4.65 NME (Round 3)
 - Higher resolution for MobileNetV3Large — 448px was worse than 384px (Round 3)
+- More unfreezing (100+ layers) on EfficientNetV2S — risk of overfitting, gap already growing at 448px
 
 ---
 
