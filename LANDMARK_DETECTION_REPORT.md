@@ -6,6 +6,50 @@ This document is a living journal of our work on cat facial landmark detection u
 
 ---
 
+## READ THIS BEFORE EXPORTING ANY MODEL
+
+**The static-vs-dynamic export choice is a property of the LiteRT version, not of
+the model, and it has already flipped once. Measure, do not reason.**
+
+Keras' `from_keras_model` conversion leaves the batch dimension dynamic, so every
+`Conv2DTranspose` computes its output shape at run time from
+`SHAPE` / `STRIDED_SLICE` / `PACK`, and TFLite logs "Attempting to use a delegate
+that only supports static-sized tensors ...". Converting from a batch-1 concrete
+function removes all of it (295 ops -> 279) and gives identical predictions. That
+looks like a free win. It is not:
+
+| flutter_litert | export | median `invoke()` | NME_IOD |
+|---|---|---|---|
+| 3.6.0 | dynamic (shipped) | 94.5 ms | 3.4857 |
+| 3.6.0 | static | **59.8 ms** | 3.4857 |
+| 3.7.0 | dynamic (shipped) | **28.2 ms** | 3.4857 |
+| 3.7.0 | static | 59.9 ms | 3.4857 |
+
+All 311 CatFLW holdout images, XNNPACK, 4 threads, same process. **Accuracy is
+identical in every cell.** On 3.6.0 the static export was a 1.58x win; on 3.7.0 it
+is a 2.13x loss, because that release got much faster on the dynamic graph while
+the static graph did not move. The dog model reproduces the inversion exactly.
+
+This was shipped as cat_detection 2.0.1 on the strength of the 3.6.0 measurement,
+then **reverted** when the packages moved to 3.7.0. The error was measuring
+against one runtime version and treating the result as a property of the model.
+
+**Checklist for every new model:**
+
+1. Export both ways: `export_tflite` (dynamic) and `scripts/reexport_static.py`
+   (static, works from a trained `best.keras`, no retraining).
+2. Benchmark **both** against the flutter_litert version the packages actually
+   resolve, using `dogs-in-the-wild-ml/scripts/bench_litert_macos.py` (set
+   `LITERT_VERSION`). Never against `tf.lite` Python, which is a third runtime and
+   ranks them differently from both.
+3. Confirm accuracy on the converted file over the full holdout with
+   `scripts/pareto_harness_cat.py`.
+4. Re-run step 2 on every flutter_litert bump. That is the step that would have
+   caught this.
+
+Do not assume the delegate warning is harmless, and do not assume removing it
+helps. Both readings have been wrong here.
+
 ## Quick Reference
 
 ### Current Best Models
@@ -355,3 +399,42 @@ Loss: MSE on [0,1] normalized coordinates
 Metric: NME_IOD (inter-ocular distance normalized)
 TFLite export: float16 quantization
 ```
+
+---
+
+## 2026-07-29: Static-shape TFLite export (tried, REVERTED, version-dependent)
+
+Ported from the dog repo. No training, no weight change: purely a change to how
+`export_tflite` converts. **Shipped as cat_detection 2.0.1, then reverted the same
+day.** See "READ THIS BEFORE EXPORTING ANY MODEL" at the top of this file.
+
+The static export removes the runtime-shaped `TRANSPOSE_CONV` output shapes
+(295 ops -> 279) and produces predictions identical to 4.8e-7 over all 311
+holdout images. Measured on flutter_litert 3.6.0 it cut median `invoke()` from
+103.8 ms to 63.4 ms, which is why it shipped.
+
+Then the packages moved to flutter_litert 3.7.0 and the ordering inverted: the
+dynamic graph dropped to 28.2 ms while the static graph stayed at 59.9 ms. The
+"fix" became a 2.1x regression, so the asset swap and the 2.0.1 CHANGELOG entry
+were both reverted and the bundled file is the original again.
+
+| flutter_litert | dynamic | static |
+|---|---|---|
+| 3.6.0 | 94.5 ms | 59.8 ms |
+| 3.7.0 | **28.2 ms** | 59.9 ms |
+
+Accuracy is 3.4857 in all four cells, so nothing about the model changed. What
+changed is which graph shape the XNNPACK delegate handles well, and that is a
+property of the LiteRT build.
+
+What to keep from this:
+
+- `scripts/reexport_static.py` still exists and is still the way to produce the
+  static variant from a trained `best.keras`. It may become the right choice again
+  on a future release.
+- `scripts/pareto_harness_cat.py` reproduces the exact seeded holdout split and
+  reports both NME_IOD conventions. It validated against the package's published
+  3.51 figure, so it is trustworthy for future comparisons.
+- The real lesson is procedural: a latency measurement is only valid for the
+  runtime version it was taken on, and a dependency bump can invalidate a shipped
+  optimisation without any code change on our side. Re-measure on every bump.

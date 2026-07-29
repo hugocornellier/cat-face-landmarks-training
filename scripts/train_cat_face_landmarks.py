@@ -1732,6 +1732,38 @@ def evaluate_model(model: tf.keras.Model, val_ds: tf.data.Dataset) -> dict[str, 
 # ---------------------------------------------------------------------------
 
 def export_tflite(model: tf.keras.Model, out_path: Path) -> None:
+    """Convert to float16 TFLite from the Keras model (dynamic batch dimension).
+
+    Do not "fix" this to convert from a batch-1 concrete function without
+    re-measuring first. The obvious-looking argument for doing so is wrong on the
+    runtime these models actually ship on, and it was tried:
+
+    Converting this way leaves the batch dimension dynamic, so Conv2DTranspose
+    builds each deconv's output shape at run time out of SHAPE/STRIDED_SLICE/PACK
+    and TFLite logs "Attempting to use a delegate that only supports static-sized
+    tensors ...". Pinning the batch to 1 removes all of that (295 ops -> 279) and
+    produces identical predictions. It looks like a free win, and on
+    flutter_litert 3.6.0 it was one. On 3.7.0 it is a 2x regression:
+
+      | litert | export  | median invoke | val NME_IOD |
+      |--------|---------|---------------|-------------|
+      | 3.6.0  | dynamic |      94.5 ms  |   3.4857    |
+      | 3.6.0  | static  |      59.8 ms  |   3.4857    |
+      | 3.7.0  | dynamic |      28.2 ms  |   3.4857    |
+      | 3.7.0  | static  |      59.9 ms  |   3.4857    |
+
+    3.7.0 got much faster on the dynamic graph specifically, and the static graph
+    did not move. Accuracy is identical in all four cells, so this is purely about
+    which graph the delegate handles better in a given release. The dog model
+    reproduces the same inversion.
+
+    The lesson is not "dynamic is better" either. It is that this choice is a
+    property of the runtime version, not of the model, and it has flipped once
+    already. Re-measure both against the version the packages resolve, with
+    dogs-in-the-wild-ml/scripts/bench_litert_macos.py, before changing this.
+    scripts/reexport_static.py produces the static variant from a trained
+    best.keras without retraining.
+    """
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
     converter.target_spec.supported_types = [tf.float16]
