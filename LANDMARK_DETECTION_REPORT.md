@@ -438,3 +438,62 @@ What to keep from this:
 - The real lesson is procedural: a latency measurement is only valid for the
   runtime version it was taken on, and a dependency bump can invalidate a shipped
   optimisation without any code change on our side. Re-measure on every bump.
+
+---
+
+## 2026-07-30: Delegate investigation, and why none of it changes the cat model
+
+The dog repo spent a long session on TFLite delegates. The cat model shares its
+architecture exactly (`small_v3large_384_long`, MobileNetV3Large + 4-deconv heatmap head,
+384px, 48 landmarks instead of 46), so every finding transfers. None of them resulted in a
+model change. Recording the outcome so it is not re-investigated from scratch.
+
+### Measured on the cat model directly
+
+flutter_litert 3.7.0, macOS arm64 (M4 Max), all 311 CatFLW holdout images:
+
+| model | backend | median | NME_IOD |
+|---|---|---|---|
+| shipped dynamic export | xnnpack | 26.40 ms | 3.4857 |
+| static re-export | xnnpack | 57.64 ms | 3.4857 |
+| static re-export | no delegate | 32.44 ms | 3.4858 |
+| static, deconv ReLU unfused | **metal** | **5.02 ms** | 3.4856 |
+
+A 5.26x GPU result, matching the dog model's 5.25x, at unchanged accuracy.
+
+### Why it was not shipped
+
+Measured afterwards on a physical **iPhone 15 Pro** with the dog model, which is the same
+architecture: the GPU delegate is worth about **1%**, not 5x. Best CPU 47.82 ms, best GPU
+46.65 ms. An M4 Max has 40 GPU cores and an A17 Pro has 6, and GPU time scales roughly with
+that while the CPU path does not.
+
+XNNPACK, the GPU delegate and the Neural Engine all land within 2% of each other on device,
+which suggests the model is memory-bandwidth bound there rather than compute bound.
+
+So the static export, the ReLU unfusing and the `TRANSPOSE_CONV` v4 delegate patch all buy
+essentially nothing on the platform that actually uses the GPU. The bundled cat asset is
+deliberately unchanged.
+
+### What is actionable, and it needs no model change
+
+On iOS, `InterpreterFactory` auto-mode selects the GPU delegate, which on this model is a
+**silent no-op**: it attaches, delegates zero ops, and the stage runs on bare CPU *without*
+XNNPACK. That costs roughly 20%. `PerformanceMode.coreml` had the same shape of problem for
+a different reason, since TFLite's Core ML delegate could not compile any model containing
+a `MEAN` op until `flutter_litert/patches/coreml_mean_padding.patch`.
+
+`cat_detection` now has a per-stage `landmarkPerformanceConfig` override for exactly this.
+Setting it to XNNPACK on iOS recovers the ~20% with no asset change.
+
+### Method note worth keeping
+
+Latency cannot detect a no-op delegate: one that attaches and delegates nothing looks like a
+slow success. Every no-op above was found by comparing output against a CPU reference on an
+identical input, where deviation of exactly 0.0 proves the delegate did nothing. Three
+separate false results in that session came from trusting timing, from importing TensorFlow
+into the same process as the delegate dylibs, and from computing deviation across two timing
+loops with different iteration counts.
+
+Full detail: `dogs-in-the-wild-ml/LANDMARK_DETECTION_REPORT.md` Round 8 sections 8 and 9,
+and `flutter_litert/doc/graph_shape_vs_delegate.md`.
