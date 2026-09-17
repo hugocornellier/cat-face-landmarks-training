@@ -50,6 +50,39 @@ against one runtime version and treating the result as a property of the model.
 Do not assume the delegate warning is harmless, and do not assume removing it
 helps. Both readings have been wrong here.
 
+### 2026-08-12 update: the GPU delegate reverses this again
+
+Everything above is measured on **XNNPACK CPU**, and stands for that case. It is
+not the whole picture, because the delegate matters as much as the runtime
+version.
+
+Every GPU backend refuses a graph carrying dynamic-sized tensors, so with the
+dynamic export both face stages ran on CPU on every platform, and toggling
+`useCompiledModel` silently changed nothing: construction failed and the
+try/catch landed back on the same Interpreter. Converting from a batch-1
+concrete function constant-folds the shape ops away (localizer 689 to 592 ops,
+landmarks 295 to 283) and moves the deconv ReLU out of TRANSPOSE_CONV into a
+separate RELU, dropping the opcode from version 4 to 3, which is what finally
+lets CompiledModel's GPU accelerator claim the deconv head.
+
+macOS M4 Max, flutter_litert 3.9.0, 25 iterations after 8 warmup:
+
+| stage | dynamic (3.0.0) | static + CompiledModel {gpu, cpu} |
+|---|---|---|
+| localizer | 8.11 ms XNNPACK | **1.70 ms** |
+| landmarks | 27.10 ms XNNPACK | **3.82 ms** |
+
+iPhone 15 Pro, iOS 26.5: localizer 15.80 to 3.05 ms, landmarks 47.48 to
+11.66 ms. Android, Linux and Windows fall back to bare CPU and measure the same
+as before. No retraining: weights are untouched and outputs match to 3.99e-06
+(localizer) and 4.17e-07 (landmarks).
+
+**So the static exports are what ships today**, shipped in 3.0.1, for the GPU
+reason rather than the CPU one. The rule is unchanged and now has a second axis:
+measure against the runtime version *and* the delegate you actually ship, never
+against Python `tf.lite`.
+
+
 ## Quick Reference
 
 ### Current Best Models

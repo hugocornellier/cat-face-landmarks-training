@@ -1,0 +1,35 @@
+Trained model weights: Creative Commons Attribution-NonCommercial 4.0
+International (CC BY-NC 4.0)
+
+Copyright 2026 Hugo Cornellier
+
+This license applies to the TRAINED MODEL WEIGHTS produced by this repository,
+including every .tflite, .keras, and .weights.h5 file, wherever they are
+distributed. It does not apply to the source code in this repository, which is
+licensed under the Apache License 2.0; see LICENSE.
+
+Full license text:
+https://creativecommons.org/licenses/by-nc/4.0/legalcode
+Summary:
+https://creativecommons.org/licenses/by-nc/4.0/
+
+WHY THE WEIGHTS ARE NON-COMMERCIAL
+
+These weights were trained on the CatFLW dataset, which is licensed CC BY-NC 4.0
+by its authors (Martvel et al., Tech4Animals Lab, University of Haifa). The
+dataset authors were asked directly how they wished weights derived from their
+annotations to be licensed, and asked that those weights be released under
+CC BY-NC 4.0 to remain consistent with the non-commercial terms of the source
+data. They granted permission to publish the weights on that basis.
+
+The weights are therefore offered for non-commercial use only. If you want to
+use them commercially, that permission is not mine alone to give: contact the
+dataset authors.
+
+ATTRIBUTION
+
+Any use or redistribution of these weights must retain this notice and cite the
+CatFLW papers. The citations are in the README of this repository.
+
+Dataset: https://github.com/martvelge/CatFLW
+Kaggle:  https://www.kaggle.com/datasets/georgemartvel/catflw
