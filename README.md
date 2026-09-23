@@ -2,7 +2,12 @@
 
 Training code, evaluation harness, and experiment journal for the cat facial
 landmark models that ship in the
-[cat_detection](https://github.com/hugocornellier/cat_detection) Flutter package.
+[cat_detection](https://pub.dev/packages/cat_detection) Flutter package
+([source](https://github.com/hugocornellier/cat_detection)).
+
+The trained weights themselves are on Hugging Face at
+[hugocornellier/cat-face-landmarks](https://huggingface.co/hugocornellier/cat-face-landmarks),
+under CC BY-NC 4.0.
 
 Two models are produced here, both exported to TFLite:
 
