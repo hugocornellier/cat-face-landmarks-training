@@ -1,5 +1,9 @@
 # cat-face-landmarks-training
 
+![Demo](demo.png)
+
+<sub>The 48 landmarks predicted by the models trained here (face localizer, then landmark model) on "Wide-eyed tiger cat" by Caleb Woods (CC0, [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Wide-eyed_tiger_cat_%28Unsplash%29.jpg)). Blue: ears. Green: eyes. Orange: nose. Yellow: mouth and chin.</sub>
+
 Training code, evaluation harness, and experiment journal for the cat facial
 landmark models that ship in the
 [cat_detection](https://pub.dev/packages/cat_detection) Flutter package
