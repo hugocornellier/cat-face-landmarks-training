@@ -46,6 +46,10 @@ against one runtime version and treating the result as a property of the model.
    `scripts/pareto_harness_cat.py`.
 4. Re-run step 2 on every flutter_litert bump. That is the step that would have
    caught this.
+5. Before publishing a file, check that `reexport_static.py` printed
+   `TRANSPOSE_CONV versions: [3]` and that `CompiledModel.is_fully_accelerated()`
+   is true under `HardwareAccelerator.GPU | HardwareAccelerator.CPU`. Added
+   2026-09-24, after a static EfficientNetV2-S export silently missed the unfuse.
 
 Do not assume the delegate warning is harmless, and do not assume removing it
 helps. Both readings have been wrong here.
@@ -63,7 +67,9 @@ try/catch landed back on the same Interpreter. Converting from a batch-1
 concrete function constant-folds the shape ops away (localizer 689 to 592 ops,
 landmarks 295 to 283) and moves the deconv ReLU out of TRANSPOSE_CONV into a
 separate RELU, dropping the opcode from version 4 to 3, which is what finally
-lets CompiledModel's GPU accelerator claim the deconv head.
+lets CompiledModel's GPU accelerator claim the deconv head. **(Correction,
+2026-09-24: the conversion does not move the ReLU. `unfuse_transpose_conv_relu.py`
+does, as a separate step. See the next update.)**
 
 macOS M4 Max, flutter_litert 3.9.0, 25 iterations after 8 warmup:
 
@@ -81,6 +87,64 @@ as before. No retraining: weights are untouched and outputs match to 3.99e-06
 reason rather than the CPU one. The rule is unchanged and now has a second axis:
 measure against the runtime version *and* the delegate you actually ship, never
 against Python `tf.lite`.
+
+
+### 2026-09-24 update: the batch-1 export does not unfuse the ReLU, and CompiledModel needs static files
+
+Found while porting the Kaggle notebooks to the `CompiledModel` API of LiteRT's
+Python package (`ai-edge-litert` 2.2.0, M4 Max).
+
+**The 2026-08-12 update above is wrong about the ReLU.** Converting from a batch-1
+concrete function does not move the deconv ReLU out of `TRANSPOSE_CONV`. Every
+landmark export tried comes out at version 4 with the ReLU fused:
+MobileNetV3-Large and EfficientNetV2-S, cat and dog, TF 2.15. The shipped
+`cat_face_landmarks_full.tflite` is version 3 only because
+`scripts/unfuse_transpose_conv_relu.py` was run on it as a separate step: it
+contains that script's four `_preact` tensors, and `reexport_static.py` plus the
+unfuse reproduces every op, tensor name and weight buffer in it (the two files
+differ only in 16 bytes of flatbuffer layout). The EfficientNetV2-S static exports
+skipped that step, and the GPU accelerator refused their deconv head
+(`TRANSPOSE_CONV: Max version supported: 3. Requested version 4.`), so the GPU run
+took 294 ms, barely faster than the CPU alone at the same 4 threads (321 ms),
+against 8.5 ms once unfused. `scripts/reexport_static.py` now runs the unfuse on
+every export and exits with an error if any `TRANSPOSE_CONV` is still above
+version 3. A graph with nothing to unfuse is left byte-for-byte unchanged.
+
+**CompiledModel needs a static export.** On a dynamic-batch file its first run
+returns all zeros without raising, and every later run fails with `Failed to
+invoke the compiled model` (status 3). The Interpreter runs the same file
+correctly. flutter_litert's model matrix recorded the same status-3 failure for
+the pre-August landmark models. On a static file CompiledModel matches the
+Interpreter's outputs (within 2e-5) and its speed.
+
+**Python's CompiledModel runs one CPU thread unless told otherwise.** Left at
+`CpuOptions(num_threads=0)`, the landmark model took about 200 ms, against 23.5 ms
+with `num_threads=16`. flutter_litert's CompiledModel is not affected: its macOS
+matrix puts Compiled CPU at about 1.1x Interpreter + XNNPACK on the median model.
+
+| landmark model | export | Interpreter, 4 threads | CompiledModel CPU, 4 threads | CompiledModel GPU |
+|---|---|---|---|---|
+| MobileNetV3-L 384 | dynamic, shipped until 2026-08-12 | 24.0 | fails | fails |
+| MobileNetV3-L 384 | static + unfused, shipped now | 63.4 | 63.0 | **2.1** |
+| EfficientNetV2-S 448 | dynamic, published until 2026-09-24 | 118.8 | fails | fails |
+| EfficientNetV2-S 448 | static | 320.3 | 320.9 | 294.0, head on CPU |
+| EfficientNetV2-S 448 | static + unfused | 322.0 | 319.2 | **8.5** |
+
+Median ms per inference from
+`dogs-in-the-wild-ml/scripts/bench_litert_python_matrix.py`: random input, 20 runs
+after 3 warmups, GPU is Metal with CPU fallback. At 16 threads the static exports
+cost 1.1x for MobileNetV3 (24.9 against 23.5 ms) and 1.7x for EfficientNetV2-S
+(116.1 against 68.6 ms) instead of 2.7x, but 16-thread figures moved by up to 14%
+between two runs of the matrix, against 3% at 4 threads.
+
+**Both EfficientNetV2-S models were withdrawn from Hugging Face and Kaggle on
+2026-09-24.** The dog one is less accurate than the 11 MB MobileNetV3-Large model
+(8.77 against 8.56). The cat one is more accurate (3.27 against 3.48), but its
+published file was a dynamic export that CompiledModel can't run, and a static
+replacement would have been 1.7 to 2.7x slower for CPU users. Every published file
+is now a static, unfused export that runs on CompiledModel, CPU and GPU. The
+EfficientNetV2-S files stay in the Hugging Face history and in version 1 of the
+Kaggle model.
 
 
 ## Quick Reference
