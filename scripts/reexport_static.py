@@ -67,6 +67,38 @@ def op_histogram(path: Path) -> dict[str, int]:
     return dict(cnt)
 
 
+def transpose_conv_versions(path: Path) -> list[int]:
+    """Opcode versions of every TRANSPOSE_CONV in a .tflite file."""
+    from tensorflow.lite.python import schema_py_generated as schema
+
+    model = schema.ModelT.InitFromObj(schema.Model.GetRootAsModel(path.read_bytes(), 0))
+    return [oc.version for oc in model.operatorCodes
+            if (oc.builtinCode if oc.builtinCode else oc.deprecatedBuiltinCode) == 67]
+
+
+def ensure_gpu_compatible(path: Path) -> None:
+    """Leave every TRANSPOSE_CONV at version 3 or lower, or fail.
+
+    The converter fuses the ReLU after each Conv2DTranspose into the op, which makes it
+    version 4. LiteRT's GPU accelerator accepts at most version 3, so it leaves the whole
+    deconv head on the CPU. The static conversion above does not change this: every
+    landmark export so far came out at version 4, MobileNetV3-Large and EfficientNetV2-S,
+    cat and dog. The shipped landmark files are version 3 only because
+    unfuse_transpose_conv_relu.py was run on them as a separate step, which is easy to
+    miss, so it runs here on every export. A graph with nothing above version 3 is left
+    byte-for-byte unchanged. See "READ THIS BEFORE EXPORTING ANY MODEL" in
+    LANDMARK_DETECTION_REPORT.md.
+    """
+    if max(transpose_conv_versions(path), default=0) > 3:
+        from unfuse_transpose_conv_relu import unfuse
+
+        unfuse(path, path)
+    versions = transpose_conv_versions(path)
+    if max(versions, default=0) > 3:
+        raise SystemExit(f"TRANSPOSE_CONV is still version {max(versions)} in {path}")
+    print("TRANSPOSE_CONV versions:", versions)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--keras", type=Path, required=True)
@@ -75,6 +107,7 @@ def main():
     args = ap.parse_args()
 
     export_static_fp16(load_model(args.keras), args.out, args.img_size)
+    ensure_gpu_compatible(args.out)
 
     hist = op_histogram(args.out)
     print("ops:", sum(hist.values()))
